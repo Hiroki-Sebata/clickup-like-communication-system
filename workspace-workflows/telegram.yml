@@ -1,0 +1,95 @@
+# Sends a short Telegram message when something happens to a task.
+#
+# This file belongs in the PRIVATE data repository (the one holding your issues),
+# NOT in the Board app repository. Put it at .github/workflows/telegram.yml there.
+#
+# Needs two repository secrets: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
+# Optionally one repository variable, BOARD_URL, so the link opens your app.
+name: Telegram notification
+
+on:
+  issues:
+    types: [opened, assigned, labeled, closed, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    # Skip the noise. A "labeled" event fires for priority and client labels too,
+    # and nobody needs a phone buzz because a client label was tidied up. The job
+    # is skipped before a runner is allocated, so these cost nothing.
+    if: >-
+      github.event.action != 'labeled' ||
+      startsWith(github.event.label.name, 'status: ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Build and send the message
+        env:
+          # Everything from the event goes through the environment, never straight
+          # into the script with ${{ }}. A task titled `"; rm -rf /` is then just a
+          # string, not something the shell runs.
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOARD_URL: ${{ vars.BOARD_URL }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ACTOR: ${{ github.event.sender.login }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          LABEL: ${{ github.event.label.name }}
+          ASSIGNEE: ${{ github.event.assignee.login }}
+          COMMENT: ${{ github.event.comment.body }}
+          LABELS_JSON: ${{ toJSON(github.event.issue.labels.*.name) }}
+        run: |
+          set -euo pipefail
+
+          # The task's current status, read out of its labels.
+          STATUS=$(printf '%s' "$LABELS_JSON" \
+            | jq -r '[.[] | select(startswith("status: ")) | ltrimstr("status: ")] | first // ""')
+
+          # Who did what, in plain words.
+          case "$EVENT:$ACTION" in
+            issues:opened)        WHAT="created" ;;
+            issues:assigned)      WHAT="assigned ${ASSIGNEE:-someone}" ;;
+            issues:labeled)       WHAT="moved" ;;
+            issues:closed)        WHAT="finished" ;;
+            issues:reopened)      WHAT="reopened" ;;
+            issue_comment:created) WHAT="commented on" ;;
+            *)                    WHAT="$ACTION" ;;
+          esac
+
+          # Prefer the app link. With no BOARD_URL set, fall back to a link that
+          # actually works - the issue on github.com - rather than an app URL
+          # pointing at a site that may not be published yet.
+          if [ -n "${BOARD_URL:-}" ]; then
+            LINK="$BOARD_URL/#/task/$NUMBER"
+          else
+            LINK="https://github.com/$GITHUB_REPOSITORY/issues/$NUMBER"
+          fi
+
+          TEXT="$ACTOR $WHAT #$NUMBER: $TITLE"
+          if [ -n "$STATUS" ] && [ "$ACTION" != "closed" ]; then
+            TEXT="$TEXT"$'\n'"Status: $STATUS"
+          fi
+          if [ "$EVENT" = "issue_comment" ]; then
+            # One line of the comment is enough for a notification.
+            SNIPPET=$(printf '%s' "$COMMENT" | tr '\n' ' ' | cut -c1-180)
+            TEXT="$TEXT"$'\n'"\"$SNIPPET\""
+          fi
+          TEXT="$TEXT"$'\n'"$LINK"
+
+          # Plain text, no parse_mode: a task title containing *, _ or [ would
+          # otherwise break the formatting or be silently rejected by Telegram.
+          curl --silent --show-error --fail-with-body \
+            --max-time 20 \
+            --retry 2 --retry-delay 3 \
+            --output /dev/null \
+            "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            --data-urlencode "chat_id=$CHAT_ID" \
+            --data-urlencode "text=$TEXT" \
+            --data-urlencode "disable_web_page_preview=true"

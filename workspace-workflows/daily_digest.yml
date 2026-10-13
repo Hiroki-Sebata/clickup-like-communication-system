@@ -1,0 +1,113 @@
+# Posts one message each morning: what is overdue, what is due today, and what
+# nobody has picked up.
+#
+# This file belongs in the PRIVATE data repository, at
+# .github/workflows/daily_digest.yml — not in the Board app repository.
+name: Daily digest
+
+on:
+  # GitHub only understands UTC, and Warsaw is UTC+2 in summer and UTC+1 in winter,
+  # so 08:45 Warsaw is a different UTC time depending on the season. Rather than
+  # pick one and be an hour out for half the year, we wake up at both times and the
+  # first step stops the run unless it really is 08:45 in Warsaw. The wasted run
+  # takes about five seconds.
+  schedule:
+    - cron: '45 6 * * *' # 08:45 Warsaw while summer time is in force (CEST, UTC+2)
+    - cron: '45 7 * * *' # 08:45 Warsaw while winter time is in force (CET,  UTC+1)
+  # Lets you fire a digest by hand from the Actions tab to check it works.
+  workflow_dispatch:
+
+permissions:
+  issues: read
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Only continue if it is 08:45 in Warsaw
+        id: clock
+        run: |
+          set -euo pipefail
+          NOW=$(TZ=Europe/Warsaw date +%H%M)
+          # workflow_dispatch should always run, whatever the time.
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ "$NOW" != "0845" ]; then
+            echo "Warsaw time is $NOW, not 0845 — this is the other season's slot."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect the open tasks
+        if: steps.clock.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # gh is pre-installed on the runner, so this needs no third-party action.
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 300 \
+            --json number,title,assignees,labels,body > issues.json
+          echo "Fetched $(jq length issues.json) open issues."
+
+      - name: Build and send the digest
+        if: steps.clock.outputs.skip == 'false'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOARD_URL: ${{ vars.BOARD_URL }}
+        run: |
+          set -euo pipefail
+          TODAY=$(TZ=Europe/Warsaw date +%F)
+
+          # Pull the due date out of the hidden "<!-- board: {...} -->" block that
+          # Board writes at the top of each issue body. A missing or broken block
+          # just means "no due date", never a failed run.
+          TEXT=$(jq -r --arg today "$TODAY" '
+            def due:
+              (.body // "")
+              | [scan("<!--\\s*board:\\s*(\\{[^}]*\\})\\s*-->")]
+              | if length == 0 then null
+                else (try (.[0][0] | fromjson | .due) catch null)
+                end;
+
+            def who: if (.assignees | length) == 0 then "unassigned"
+                     else ([.assignees[].login] | join(" and ")) end;
+
+            def byPerson($rows):
+              $rows
+              | group_by(.w)
+              | map(
+                  ["  " + .[0].w + ":"]
+                  + (sort_by(.d) | map("    #\(.number) \(.title)" + (if .d then " (due \(.d))" else "" end)))
+                )
+              | flatten;
+
+            [ .[] | . + { d: due, w: who } ]                      as $all
+            | ($all | map(select(.d != null and .d <  $today)))   as $overdue
+            | ($all | map(select(.d == $today)))                  as $today_list
+            | ($all | map(select(.w == "unassigned")))            as $free
+            | ( ["Good morning. Here is today, \($today)."]
+                + (if ($overdue | length) > 0
+                   then ["", "OVERDUE (\($overdue | length)):"] + byPerson($overdue) else [] end)
+                + (if ($today_list | length) > 0
+                   then ["", "DUE TODAY (\($today_list | length)):"] + byPerson($today_list) else [] end)
+                + (if ($free | length) > 0
+                   then ["", "NOBODY PICKED UP (\($free | length)):"]
+                        + ($free | sort_by(.number) | map("    #\(.number) \(.title)")) else [] end)
+                + (if (($overdue | length) + ($today_list | length) + ($free | length)) == 0
+                   then ["", "Nothing overdue, nothing due today, nothing unassigned."] else [] end)
+              ) | join("\n")
+          ' issues.json)
+
+          if [ -n "${BOARD_URL:-}" ]; then
+            TEXT="$TEXT"$'\n\n'"$BOARD_URL"
+          fi
+
+          curl --silent --show-error --fail-with-body \
+            --max-time 20 --retry 2 --retry-delay 3 --output /dev/null \
+            "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            --data-urlencode "chat_id=$CHAT_ID" \
+            --data-urlencode "text=$TEXT" \
+            --data-urlencode "disable_web_page_preview=true"
