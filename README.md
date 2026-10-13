@@ -14,12 +14,13 @@ is nothing to pay for.
 1. [How it works in one minute](#how-it-works-in-one-minute)
 2. [Setting it up the first time](#setting-it-up-the-first-time)
 3. [Making your access token](#making-your-access-token)
-4. [Installing the app on your computer](#installing-the-app-on-your-computer)
-5. [Telegram notifications](#telegram-notifications)
-6. [Using Board day to day](#using-board-day-to-day)
-7. [Updating the app](#updating-the-app)
-8. [If something goes wrong](#if-something-goes-wrong)
-9. [For whoever maintains the code](#for-whoever-maintains-the-code)
+4. [Giving your co-worker access](#giving-your-co-worker-access)
+5. [Installing the app on your computer](#installing-the-app-on-your-computer)
+6. [Telegram notifications](#telegram-notifications)
+7. [Using Board day to day](#using-board-day-to-day)
+8. [Updating the app](#updating-the-app)
+9. [If something goes wrong](#if-something-goes-wrong)
+10. [For whoever maintains the code](#for-whoever-maintains-the-code)
 
 ---
 
@@ -79,16 +80,17 @@ This is the repository you are reading now. If it is not yet where you want it:
 Open **`src/config.ts`** and change the first two lines:
 
 ```ts
-dataOwner: 'Northbound',   // the account or organisation that owns the private repo
-dataRepo:  'workspace',    // the private repo's name
+dataOwner: 'Hiroki-Sebata',   // the account that owns the private repo
+dataRepo:  'board-workspace', // the private repo's name
 ```
 
-Also set `appUrl` to wherever the app will be published, for example
-`https://northbound.github.io/board`. Commit and push.
+Also set `appUrl` to wherever the app is published. For this repository that is
+`https://hiroki-sebata.github.io/clickup-like-communication-system`. Commit and push.
 
-> A GitHub **organisation** (like `Northbound`) can only be created by a person, in
-> the GitHub web interface — no tool can make one for you. If you have not made one,
-> use your own username as `dataOwner` instead; everything works the same.
+> **You do not need a GitHub organisation.** An organisation can only be created by
+> a person in the GitHub web interface, and Board does not need one — your own
+> username works exactly the same. `dataOwner` is simply whoever owns the private
+> tasks repository.
 
 ### 4. Turn on GitHub Pages
 
@@ -125,14 +127,29 @@ own, on each computer you use.
    - **Token name**: something you will recognise, like `Board on my MacBook`.
    - **Expiration**: 90 days is a sensible choice. Board will warn you in the top
      bar when it has 14 days left.
-   - **Resource owner**: the account that owns your private repository.
-   - **Repository access**: **Only select repositories** → pick your private repo.
-   - **Permissions → Repository permissions**:
+   - **Resource owner**: `Hiroki-Sebata` — your own username. There is no
+     organisation to look for.
+   - **Repository access**: tick **Only select repositories**, then choose
+     `board-workspace`. Do **not** leave it on "Public repositories" — that is
+     read-only and cannot touch a private repo, and the sign-in will fail.
+   - **Permissions → Repository permissions** — this is a separate box from
+     "Account permissions", which you can ignore entirely:
      - **Issues**: **Read and write**
      - **Metadata**: **Read-only** (GitHub ticks this for you)
      - Leave everything else alone.
 5. **Generate token**, then copy it. GitHub shows it once and never again.
 6. Paste it into Board and press **Sign in**.
+
+If the repository list at step 4 is empty, `board-workspace` does not exist yet.
+Create it first — see "Setting it up the first time" above.
+
+### What the errors mean
+
+| Board says | What to change |
+| --- | --- |
+| "not allowed to see who you are" | Repository access is on "Public repositories", or no Issues permission was added. Fix steps 4 and 5. |
+| "did not accept that token" | The token was truncated when copied, or it has expired. Make a new one. |
+| "Cannot see …" | The token is valid but was not given access to that repository, or the repository does not exist. |
 
 ### Where the token is kept
 
@@ -150,6 +167,37 @@ ever leaked, the damage is limited to the issues in that one private repo. A
 classic token cannot be limited that way, so do not use one.
 
 ---
+
+## Giving your co-worker access
+
+Each person uses their own GitHub account and their own token. You never share a
+token — not by message, not by email. A shared token cannot be revoked for one
+person without locking out the other, and GitHub would record both of you as the
+same author.
+
+Three steps, and only the first is yours:
+
+1. **You** add them to the private tasks repository: open it on github.com →
+   **Settings → Collaborators → Add people** → type their GitHub username →
+   give them **Write** access. Write is required: Read-only lets them see tasks
+   but not create or change any.
+2. **They** accept the invitation. GitHub emails it to them, and it also appears
+   at `github.com/notifications`. Nothing works until they accept.
+3. **They** open the app, make their own token following the steps above, and
+   sign in.
+
+That is all. They do not need access to this app repository — it is public, and it
+holds no data. They only need access to the private tasks repository.
+
+Once they have accepted, their name appears automatically in the assignee list and
+in `@mentions`. Board reads the member list from the repository's collaborators, so
+there is nothing to configure.
+
+### Taking access away
+
+Remove them from **Settings → Collaborators** in the private repository. Their
+token stops working against it immediately, even though the token still exists on
+their machine.
 
 ## Installing the app on your computer
 
@@ -193,6 +241,15 @@ back online — a change nobody can save is worse than no change.
 
 ## Telegram notifications
 
+**This is optional. Board is complete without it.** Skip this section until the
+app itself is working.
+
+What Telegram adds is the one thing a website cannot do: reach you when the app is
+closed. Board only tells you about a change while you have it open. If the two of
+you want a phone buzz when a task moves, or a summary each morning of what is
+overdue, that is what these workflows are for. If you would both rather just open
+Board when you want to know, you never need to set this up.
+
 Two workflows live in the **private data repository**, not in the app. They are in
 the `workspace-workflows/` folder here, ready to copy across.
 
@@ -230,7 +287,7 @@ On the **Variables** tab, **New repository variable**:
 
 | Name | Value |
 | --- | --- |
-| `BOARD_URL` | your app address, no trailing slash, e.g. `https://northbound.github.io/board` |
+| `BOARD_URL` | your app address, no trailing slash: `https://hiroki-sebata.github.io/clickup-like-communication-system` |
 
 That variable is what makes the link in each message open the task in Board rather
 than on github.com.
@@ -247,7 +304,7 @@ into `.github/workflows/` in the **private** repository, and commit.
 ```
 partner moved #12: Homepage hero copy
 Status: review
-https://northbound.github.io/board/#/task/12
+https://hiroki-sebata.github.io/clickup-like-communication-system/#/task/12
 ```
 
 It fires on: task created, assigned, status changed, closed, reopened, and new
@@ -358,7 +415,7 @@ stale, open the same address in a normal browser tab and press
 
 ## If something goes wrong
 
-**"Cannot see Northbound/workspace."**
+**"Cannot see Hiroki-Sebata/board-workspace."**
 Either the name in `src/config.ts` is wrong, or your token was not given access to
 that repository. Make a new token and check **Resource owner** and **Repository
 access**.
