@@ -36,11 +36,28 @@ export function SignIn({ onSignedIn }: { onSignedIn: (token: string, viewer: Vie
       onSignedIn(token.trim(), viewer);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(
-        message.includes('401') || message.includes('Bad credentials')
-          ? 'GitHub did not accept that token. Check you copied all of it, and that it has not expired.'
-          : `Could not reach GitHub: ${message}`,
-      );
+      const status = (err as { status?: number })?.status;
+
+      // GitHub's own wording here is unhelpful ("Not Found" when the real problem
+      // is a missing permission), so each case gets an answer you can act on.
+      let friendly: string;
+      if (status === 401 || message.includes('Bad credentials')) {
+        friendly =
+          'GitHub did not accept that token. Either it was not copied in full, or it has expired. Make a new one.';
+      } else if (status === 404 || message.includes('Not Found')) {
+        friendly =
+          'The token works, but it is not allowed to see who you are. This almost always means the ' +
+          'token was created with "Public repositories" access and no permissions. Edit the token: set ' +
+          'Repository access to "Only select repositories", pick your tasks repository, then under ' +
+          'Repository permissions set Issues to "Read and write" (Metadata ticks itself).';
+      } else if (status === 403) {
+        friendly =
+          'GitHub refused the request. The token is missing a permission, or you have made too many ' +
+          'requests and need to wait a few minutes.';
+      } else {
+        friendly = `Could not reach GitHub: ${message}`;
+      }
+      setError(friendly);
       setBusy(false);
     }
   }
@@ -75,22 +92,34 @@ export function SignIn({ onSignedIn }: { onSignedIn: (token: string, viewer: Vie
           <summary className="muted" style={{ cursor: 'pointer', fontSize: 13 }}>
             How do I make one?
           </summary>
-          <ol className="faint" style={{ paddingLeft: 18, lineHeight: 1.7 }}>
+          <ol className="faint" style={{ paddingLeft: 18, lineHeight: 1.8 }}>
             <li>
               Go to <code>github.com</code> → your photo → Settings → Developer settings →
-              Personal access tokens → <strong>Fine-grained tokens</strong>.
+              Personal access tokens → <strong>Fine-grained tokens</strong> →{' '}
+              <strong>Generate new token</strong>.
             </li>
-            <li>Generate new token. Give it a name like "Board on my laptop".</li>
+            <li>Name it something you will recognise, like "Board on my laptop".</li>
             <li>
-              Resource owner: <strong>{config.dataOwner}</strong>. Repository access: only
-              select repositories → <strong>{config.dataRepo}</strong>.
+              Resource owner: <strong>{config.dataOwner}</strong>.
             </li>
             <li>
-              Permissions: <strong>Issues → Read and write</strong>, and{' '}
-              <strong>Metadata → Read-only</strong>. Nothing else.
+              Repository access: tick <strong>Only select repositories</strong> — NOT "Public
+              repositories" — then choose <strong>{config.dataRepo}</strong> from the list.
             </li>
-            <li>Copy the token and paste it above. You will not see it again.</li>
+            <li>
+              Open <strong>Permissions → Repository permissions</strong> (not Account
+              permissions), find <strong>Issues</strong> and set it to{' '}
+              <strong>Read and write</strong>. Metadata ticks itself. Leave the rest alone.
+            </li>
+            <li>
+              <strong>Generate token</strong>, copy it, paste it above. GitHub shows it once.
+            </li>
           </ol>
+          <p className="faint" style={{ marginTop: 8 }}>
+            The two steps people get wrong are 4 and 5. If the repository list is empty at
+            step 4, the repository <strong>{config.dataRepo}</strong> does not exist yet —
+            create it first, and make it private.
+          </p>
         </details>
 
         {error ? (

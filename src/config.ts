@@ -7,10 +7,10 @@
 
 export const config = {
   /** The GitHub account or organisation that owns the private data repository. */
-  dataOwner: 'Northbound',
+  dataOwner: 'Hiroki-Sebata',
 
   /** The private repository whose Issues are your tasks. */
-  dataRepo: 'workspace',
+  dataRepo: 'board-workspace',
 
   /**
    * Where this app is published. Only used to build the links that the Telegram
