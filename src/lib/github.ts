@@ -509,6 +509,40 @@ export class GitHubApi {
     return toProject(data);
   }
 
+  /** Change a project's name, deadline, description, or open/closed state. */
+  async updateProject(
+    number: number,
+    patch: { title?: string; dueOn?: string | null; description?: string; state?: 'open' | 'closed' },
+  ): Promise<Project> {
+    const body: Record<string, unknown> = {};
+    if (patch.title !== undefined) body.title = patch.title;
+    if (patch.description !== undefined) body.description = patch.description;
+    if (patch.state !== undefined) body.state = patch.state;
+    if (patch.dueOn !== undefined) {
+      // Midday avoids a deadline slipping a day either way through timezones.
+      body.due_on = patch.dueOn ? `${patch.dueOn}T12:00:00Z` : null;
+    }
+    const data = await this.send<RawMilestone>(
+      'PATCH /repos/{owner}/{repo}/milestones/{milestone_number}',
+      { milestone_number: number, ...body },
+    );
+    this.cache.delete('milestones#1');
+    this.invalidateIssues();
+    return toProject(data);
+  }
+
+  /**
+   * Delete a project. The tasks inside it are NOT deleted — GitHub simply takes
+   * them out of the milestone, so no work is lost.
+   */
+  async deleteProject(number: number): Promise<void> {
+    await this.send('DELETE /repos/{owner}/{repo}/milestones/{milestone_number}', {
+      milestone_number: number,
+    });
+    this.cache.delete('milestones#1');
+    this.invalidateIssues();
+  }
+
   // --- activity ------------------------------------------------------------
 
   /** Recent events and comments across the whole repository. */

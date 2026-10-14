@@ -9,7 +9,9 @@ name: Telegram notification
 
 on:
   issues:
-    types: [opened, assigned, labeled, closed, reopened]
+    # "milestoned" fires when a task is put into a project, "demilestoned" when
+    # it is taken out. Without these, moving work into a project is silent.
+    types: [opened, assigned, labeled, closed, reopened, milestoned, demilestoned]
   issue_comment:
     types: [created]
   # Projects are milestones. A deadline being set or moved is worth knowing about.
@@ -56,6 +58,7 @@ jobs:
           COMMENT: ${{ github.event.comment.body }}
           LABELS_JSON: ${{ toJSON(github.event.issue.labels.*.name) }}
           ASSIGNEES_JSON: ${{ toJSON(github.event.issue.assignees.*.login) }}
+          ISSUE_MILESTONE: ${{ github.event.issue.milestone.title }}
           MILESTONE_TITLE: ${{ github.event.milestone.title }}
           MILESTONE_DUE: ${{ github.event.milestone.due_on }}
           MILESTONE_OPEN: ${{ github.event.milestone.open_issues }}
@@ -117,10 +120,14 @@ jobs:
           # Who it belongs to, for the creation message.
           WHO=$(printf '%s' "$ASSIGNEES_JSON" | jq -r 'join(" and ") // ""')
 
-          # Who did what, in plain words.
+          # Who did what, in plain words. NOTE carries an extra line where the
+          # verb alone would not say enough.
+          NOTE=""
           case "$EVENT:$ACTION" in
             issues:opened)        WHAT="created" ;;
             issues:assigned)      WHAT="assigned ${ASSIGNEE:-someone} to" ;;
+            issues:milestoned)    WHAT="moved"; NOTE="Into project: ${ISSUE_MILESTONE:-a project}" ;;
+            issues:demilestoned)  WHAT="moved"; NOTE="Out of its project" ;;
             issues:labeled)       WHAT="moved" ;;
             issues:closed)        WHAT="finished" ;;
             issues:reopened)      WHAT="reopened" ;;
@@ -138,6 +145,9 @@ jobs:
           fi
 
           TEXT="$ACTOR $WHAT #$NUMBER: $TITLE"
+          if [ -n "$NOTE" ]; then
+            TEXT="$TEXT"$'\n'"$NOTE"
+          fi
           if [ -n "$STATUS" ] && [ "$ACTION" != "closed" ]; then
             TEXT="$TEXT"$'\n'"Status: $STATUS"
           fi

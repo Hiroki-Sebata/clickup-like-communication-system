@@ -50,6 +50,11 @@ export interface Api {
 
   listProjects(): Promise<Project[]>;
   createProject(title: string, dueOn: string | null, description: string): Promise<Project>;
+  updateProject(
+    number: number,
+    patch: { title?: string; dueOn?: string | null; description?: string; state?: 'open' | 'closed' },
+  ): Promise<Project>;
+  deleteProject(number: number): Promise<void>;
 
   listActivity(): Promise<ActivityItem[]>;
 }

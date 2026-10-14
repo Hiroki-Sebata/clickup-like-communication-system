@@ -304,6 +304,33 @@ export class MockApi implements Api {
     return this.delay(project);
   }
 
+  async updateProject(
+    number: number,
+    patch: { title?: string; dueOn?: string | null; description?: string; state?: 'open' | 'closed' },
+  ): Promise<Project> {
+    const index = MILESTONES.findIndex((m) => m.number === number);
+    if (index < 0) throw new Error(`No project ${number}`);
+    const next: Project = {
+      ...MILESTONES[index],
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.state !== undefined ? { state: patch.state } : {}),
+      ...(patch.dueOn !== undefined ? { dueOn: patch.dueOn } : {}),
+    };
+    MILESTONES[index] = next;
+    return this.delay(next);
+  }
+
+  async deleteProject(number: number): Promise<void> {
+    const index = MILESTONES.findIndex((m) => m.number === number);
+    if (index >= 0) MILESTONES.splice(index, 1);
+    // The tasks survive; they just lose their project, same as on GitHub.
+    this.tasks = this.tasks.map((t) =>
+      t.milestone?.number === number ? { ...t, milestone: null } : t,
+    );
+    await this.delay(null);
+  }
+
   async listActivity(): Promise<ActivityItem[]> {
     const items: ActivityItem[] = this.tasks.slice(0, 10).map((t, i) => ({
       id: `m${t.number}`,

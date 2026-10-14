@@ -91,6 +91,11 @@ interface WorkspaceValue {
   }) => Promise<Task | null>;
   addComment: (number: number, body: string) => Promise<boolean>;
   createProject: (title: string, dueOn: string | null, description: string) => Promise<void>;
+  updateProject: (
+    number: number,
+    patch: { title?: string; dueOn?: string | null; description?: string; state?: 'open' | 'closed' },
+  ) => Promise<void>;
+  deleteProject: (number: number) => Promise<void>;
   signOut: () => void;
 }
 
@@ -521,6 +526,40 @@ export function WorkspaceProvider({
     [api, notify],
   );
 
+  const updateProject = useCallback<WorkspaceValue['updateProject']>(
+    async (number, patch) => {
+      try {
+        const saved = await api.updateProject(number, patch);
+        setProjects((c) => c.map((p) => (p.number === number ? saved : p)));
+        await refresh('manual');
+        notify('Project saved', 'success');
+      } catch (error) {
+        notify(
+          `Could not save the project: ${error instanceof Error ? error.message : String(error)}`,
+          'error',
+        );
+      }
+    },
+    [api, refresh, notify],
+  );
+
+  const deleteProject = useCallback<WorkspaceValue['deleteProject']>(
+    async (number) => {
+      try {
+        await api.deleteProject(number);
+        setProjects((c) => c.filter((p) => p.number !== number));
+        await refresh('manual');
+        notify('Project deleted. Its tasks were kept.', 'success');
+      } catch (error) {
+        notify(
+          `Could not delete the project: ${error instanceof Error ? error.message : String(error)}`,
+          'error',
+        );
+      }
+    },
+    [api, refresh, notify],
+  );
+
   const signOut = useCallback(() => {
     storage.forgetEverything();
     onSignOut();
@@ -552,6 +591,8 @@ export function WorkspaceProvider({
     createTask,
     addComment,
     createProject,
+    updateProject,
+    deleteProject,
     signOut,
   };
 
