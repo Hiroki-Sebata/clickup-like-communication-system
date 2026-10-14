@@ -133,7 +133,7 @@ export class MockApi implements Api {
     return value;
   }
 
-  async getViewer(): Promise<ViewerInfo> {
+  async getViewer(): Promise<ViewerInfo | null> {
     return this.delay({
       login: ME,
       name: 'Demo user',
@@ -144,6 +144,15 @@ export class MockApi implements Api {
 
   async checkRepoAccess() {
     return this.delay({ ok: true } as const);
+  }
+
+  viewerFromMember(member: Member): ViewerInfo {
+    return {
+      login: member.login,
+      name: member.name ?? member.login,
+      avatarUrl: member.avatarUrl,
+      tokenExpiresAt: this.tokenExpiresAt,
+    };
   }
 
   async getMembers(): Promise<Member[]> {

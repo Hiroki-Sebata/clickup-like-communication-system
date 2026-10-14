@@ -9,6 +9,7 @@ const KEYS = {
   token: 'board.token',
   theme: 'board.theme',
   lastOpened: 'board.lastOpened',
+  identity: 'board.identity',
   tasksCache: 'board.cache.tasks',
   projectsCache: 'board.cache.projects',
   user: 'board.cache.user',
@@ -45,6 +46,13 @@ export const storage = {
 
   getTheme: () => read(KEYS.theme) as 'light' | 'dark' | 'system' | null,
   setTheme: (t: 'light' | 'dark' | 'system') => write(KEYS.theme, t),
+
+  /**
+   * Who you told Board you are. Only used when the token is repo-scoped and so
+   * cannot read your account details from GitHub.
+   */
+  getIdentity: () => read(KEYS.identity),
+  setIdentity: (login: string) => write(KEYS.identity, login),
 
   /** When the app was last open, used by the "what changed" feed on Home. */
   getLastOpened: () => read(KEYS.lastOpened),

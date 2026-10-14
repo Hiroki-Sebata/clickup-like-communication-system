@@ -13,7 +13,6 @@
  *     it tells us to wait, rather than hammering it.
  */
 import { Octokit } from 'octokit';
-import { RequestError } from '@octokit/request-error';
 import { config } from '../config';
 import {
   CLIENT_LABEL_COLOUR,
@@ -41,6 +40,27 @@ export interface ViewerInfo {
   avatarUrl: string;
   /** Null when GitHub does not tell us (classic tokens, or no expiry set). */
   tokenExpiresAt: Date | null;
+}
+
+/**
+ * The HTTP status of a failed request, or null if it was not an HTTP failure.
+ *
+ * Deliberately NOT `error instanceof RequestError`. Octokit's plugins can each
+ * carry their own copy of that class, so the error thrown at runtime is often a
+ * *different* class from the one imported here, and instanceof quietly returns
+ * false. That turned a handled 404 into an unhandled one, and it does not show
+ * up in a unit test that throws the imported class itself. Reading .status works
+ * whichever copy produced the error.
+ */
+function httpStatus(error: unknown): number | null {
+  const status = (error as { status?: unknown })?.status;
+  return typeof status === 'number' ? status : null;
+}
+
+/** The response headers off a failed request, whichever copy of the error class it is. */
+function errorHeaders(error: unknown): Record<string, string> {
+  return ((error as { response?: { headers?: Record<string, string> } })?.response?.headers ??
+    {}) as Record<string, string>;
 }
 
 /** Thrown when we are deliberately holding off because GitHub asked us to. */
@@ -93,6 +113,15 @@ export class GitHubApi {
     return { owner: this.owner, repo: this.repo };
   }
 
+  /**
+   * owner/repo belong only on routes that name them. Sending them to an account
+   * route like /user just tacks on meaningless query parameters.
+   */
+  private paramsFor(route: string, params: Record<string, unknown>) {
+    const needsRepo = route.includes('{owner}') || route.includes('{repo}');
+    return needsRepo ? { ...this.repoParams, ...params } : { ...params };
+  }
+
   /** Read the useful headers off any response. */
   private noteHeaders(headers: Record<string, unknown>): void {
     const remaining = headers['x-ratelimit-remaining'];
@@ -115,8 +144,8 @@ export class GitHubApi {
   }
 
   /** Work out how long GitHub wants us to wait after a 403/429. */
-  private noteBackoff(error: RequestError): void {
-    const headers = (error.response?.headers ?? {}) as Record<string, string>;
+  private noteBackoff(error: unknown): void {
+    const headers = errorHeaders(error);
     const retryAfter = headers['retry-after'];
     const reset = headers['x-ratelimit-reset'];
 
@@ -162,8 +191,7 @@ export class GitHubApi {
     try {
       this.stats.requests++;
       const response = await this.octokit.request(route, {
-        ...this.repoParams,
-        ...params,
+        ...this.paramsFor(route, params),
         headers: cached ? { 'if-none-match': cached.etag } : {},
       });
       this.noteHeaders(response.headers as Record<string, unknown>);
@@ -171,14 +199,15 @@ export class GitHubApi {
       if (etag) this.cache.set(cacheKey, { etag, data: response.data });
       return { data: response.data as T, fresh: true };
     } catch (error) {
-      if (error instanceof RequestError) {
-        if (error.status === 304 && cached) {
+      const status = httpStatus(error);
+      if (status !== null) {
+        if (status === 304 && cached) {
           // Free of charge: the data we already have is still correct.
           this.stats.notModified++;
-          this.noteHeaders((error.response?.headers ?? {}) as Record<string, unknown>);
+          this.noteHeaders(errorHeaders(error) as Record<string, unknown>);
           return { data: cached.data as T, fresh: false };
         }
-        if (error.status === 403 || error.status === 429) {
+        if (status === 403 || status === 429) {
           this.noteBackoff(error);
           throw new BackoffError(this.blockedUntil!);
         }
@@ -193,11 +222,12 @@ export class GitHubApi {
     try {
       this.stats.requests++;
       this.stats.writes++;
-      const response = await this.octokit.request(route, { ...this.repoParams, ...params });
+      const response = await this.octokit.request(route, this.paramsFor(route, params));
       this.noteHeaders(response.headers as Record<string, unknown>);
       return response.data as T;
     } catch (error) {
-      if (error instanceof RequestError && (error.status === 403 || error.status === 429)) {
+      const status = httpStatus(error);
+      if (status === 403 || status === 429) {
         this.noteBackoff(error);
         throw new BackoffError(this.blockedUntil!);
       }
@@ -232,15 +262,47 @@ export class GitHubApi {
 
   // --- sign in -------------------------------------------------------------
 
-  /** Check the token works and find out who it belongs to. */
-  async getViewer(): Promise<ViewerInfo> {
-    const data = await this.send<{ login: string; name: string | null; avatar_url: string }>(
-      'GET /user',
-    );
+  /**
+   * Who does this token belong to?
+   *
+   * GET /user is an ACCOUNT-level endpoint. A fine-grained token scoped to a single
+   * repository — which is exactly what Board asks you to make — has no account
+   * permissions, and GitHub answers with 404 rather than 403, to avoid confirming
+   * what exists.
+   *
+   * So this is allowed to fail, and returns null when it does. Identity is a
+   * convenience; access to the tasks repository is the thing that actually matters,
+   * and that is checked separately. When this returns null the app asks you which
+   * collaborator you are instead.
+   */
+  async getViewer(): Promise<ViewerInfo | null> {
+    try {
+      const data = await this.send<{ login: string; name: string | null; avatar_url: string }>(
+        'GET /user',
+      );
+      return {
+        login: data.login,
+        name: data.name,
+        avatarUrl: data.avatar_url,
+        tokenExpiresAt: this.tokenExpiresAt,
+      };
+    } catch (error) {
+      // 403/404 here means "this token is repo-scoped", which is correct and fine.
+      const status = httpStatus(error);
+      if (status === 404 || status === 403) {
+        return null;
+      }
+      if (error instanceof BackoffError) return null;
+      throw error; // 401 and network failures are real problems, and must surface.
+    }
+  }
+
+  /** Build an identity from a collaborator the person picked themselves. */
+  viewerFromMember(member: Member): ViewerInfo {
     return {
-      login: data.login,
-      name: data.name,
-      avatarUrl: data.avatar_url,
+      login: member.login,
+      name: member.name ?? member.login,
+      avatarUrl: member.avatarUrl,
       tokenExpiresAt: this.tokenExpiresAt,
     };
   }
@@ -251,14 +313,16 @@ export class GitHubApi {
       await this.send('GET /repos/{owner}/{repo}');
       return { ok: true };
     } catch (error) {
-      if (error instanceof RequestError) {
-        if (error.status === 404) {
+      const status = httpStatus(error);
+      if (status !== null) {
+        if (status === 404) {
           return {
             ok: false,
             reason: `Cannot see ${this.owner}/${this.repo}. Either the repository does not exist yet, or the token was not given access to it.`,
           };
         }
-        return { ok: false, reason: `GitHub said: ${error.status} ${error.message}` };
+        const detail = error instanceof Error ? error.message : String(error);
+        return { ok: false, reason: `GitHub said: ${status} ${detail}` };
       }
       return { ok: false, reason: String(error) };
     }
@@ -332,7 +396,7 @@ export class GitHubApi {
       this.cache.delete('labels#1');
     } catch (error) {
       // 422 means it already exists, which is exactly what we wanted.
-      if (!(error instanceof RequestError && error.status === 422)) throw error;
+      if (httpStatus(error) !== 422) throw error;
     }
   }
 

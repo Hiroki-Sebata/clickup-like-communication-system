@@ -14,7 +14,9 @@ export interface Api {
   readonly stats: { requests: number; notModified: number; writes: number };
   onStateChange: (() => void) | null;
 
-  getViewer(): Promise<ViewerInfo>;
+  /** null when the token is repo-scoped and cannot read account details. */
+  getViewer(): Promise<ViewerInfo | null>;
+  viewerFromMember(member: Member): ViewerInfo;
   checkRepoAccess(): Promise<{ ok: true } | { ok: false; reason: string }>;
   getMembers(): Promise<Member[]>;
   ensureLabels(): Promise<string[]>;

@@ -34,8 +34,29 @@ export default function App() {
     (async () => {
       try {
         const api = isMockMode ? new MockApi() : new GitHubApi(token);
+
+        // A repo-scoped token cannot read your profile, so this may be null. That
+        // is not a failure — fall back to the name you picked when you signed in.
         const info = await api.getViewer();
-        if (!cancelled) setViewer(info);
+        if (info) {
+          if (!cancelled) setViewer(info);
+          return;
+        }
+
+        const saved = storage.getIdentity();
+        const members = await api.getMembers();
+        const me = members.find((m) => m.login === saved);
+        if (me) {
+          if (!cancelled) setViewer(api.viewerFromMember(me));
+          return;
+        }
+
+        // The token no longer reaches the repository, or we no longer know who you
+        // are. Either way, sign in again rather than guess.
+        if (!cancelled) {
+          storage.forgetEverything();
+          setToken(null);
+        }
       } catch {
         // Expired or revoked: back to the sign-in panel.
         if (!cancelled) {

@@ -7,59 +7,90 @@
 import { useState } from 'react';
 import { config, dataRepoFullName, isMockMode } from '../config';
 import { GitHubApi, type ViewerInfo } from '../lib/github';
+import type { Api } from '../lib/api';
 import { MockApi } from '../lib/mock';
 import { storage } from '../lib/storage';
+import type { Member } from '../lib/types';
 
 export function SignIn({ onSignedIn }: { onSignedIn: (token: string, viewer: ViewerInfo) => void }) {
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ViewerInfo | null>(null);
+  // Shown when the token works but cannot tell us who you are.
+  const [choices, setChoices] = useState<Member[] | null>(null);
+  const [pendingApi, setPendingApi] = useState<Api | null>(null);
 
   async function check(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     setPreview(null);
+    setChoices(null);
+
+    const api: Api = isMockMode ? new MockApi() : new GitHubApi(token.trim());
 
     try {
-      const api = isMockMode ? new MockApi() : new GitHubApi(token.trim());
-      const viewer = await api.getViewer();
+      // What actually matters is whether this token can reach the tasks
+      // repository. That is checked FIRST, because it is the real requirement.
       const access = await api.checkRepoAccess();
       if (!access.ok) {
         setError(access.reason);
-        setPreview(viewer); // we still know who they are, which helps them debug
         setBusy(false);
         return;
       }
-      storage.setToken(token.trim());
-      onSignedIn(token.trim(), viewer);
+
+      // Who is it? A repo-scoped token cannot answer this, and that is fine —
+      // it is not a reason to refuse a token that reaches the repository.
+      const viewer = await api.getViewer();
+      if (viewer) {
+        storage.setToken(token.trim());
+        storage.setIdentity(viewer.login);
+        onSignedIn(token.trim(), viewer);
+        return;
+      }
+
+      // Fall back to asking. The collaborator list comes from the repository
+      // itself, so it needs no account access.
+      const members = await api.getMembers();
+      if (members.length === 0) {
+        setError(
+          'The token reaches the repository, but nobody is listed as a collaborator on it, ' +
+            'so Board cannot tell who you are. Add yourself under Settings → Collaborators ' +
+            'in the tasks repository, then try again.',
+        );
+        setBusy(false);
+        return;
+      }
+      setPendingApi(api);
+      setChoices(members);
+      setBusy(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = (err as { status?: number })?.status;
 
-      // GitHub's own wording here is unhelpful ("Not Found" when the real problem
-      // is a missing permission), so each case gets an answer you can act on.
       let friendly: string;
       if (status === 401 || message.includes('Bad credentials')) {
         friendly =
           'GitHub did not accept that token. Either it was not copied in full, or it has expired. Make a new one.';
-      } else if (status === 404 || message.includes('Not Found')) {
-        friendly =
-          'The token works, but it is not allowed to see who you are. This almost always means the ' +
-          'token was created with "Public repositories" access and no permissions. Edit the token: set ' +
-          'Repository access to "Only select repositories", pick your tasks repository, then under ' +
-          'Repository permissions set Issues to "Read and write" (Metadata ticks itself).';
       } else if (status === 403) {
         friendly =
-          'GitHub refused the request. The token is missing a permission, or you have made too many ' +
-          'requests and need to wait a few minutes.';
+          'GitHub refused the request. The token is missing the Issues permission, or you have ' +
+          'made too many requests and need to wait a few minutes.';
       } else {
         friendly = `Could not reach GitHub: ${message}`;
       }
       setError(friendly);
       setBusy(false);
     }
+  }
+
+  /** The person picked themselves from the collaborator list. */
+  function chooseMember(member: Member) {
+    if (!pendingApi) return;
+    storage.setToken(token.trim());
+    storage.setIdentity(member.login);
+    onSignedIn(token.trim(), pendingApi.viewerFromMember(member));
   }
 
   return (
@@ -137,8 +168,43 @@ export function SignIn({ onSignedIn }: { onSignedIn: (token: string, viewer: Vie
           </div>
         ) : null}
 
-        <button className="btn btn-primary" type="submit" disabled={busy || !token.trim()}>
-          {busy ? 'Checking…' : 'Sign in'}
+        {choices ? (
+          <div
+            style={{
+              border: '1px solid var(--border-soft)',
+              borderRadius: 'var(--radius-button)',
+              padding: 12,
+              marginBottom: 12,
+            }}
+          >
+            <strong style={{ display: 'block', marginBottom: 4 }}>Which one are you?</strong>
+            <p className="faint" style={{ marginTop: 0 }}>
+              Your token is scoped to {config.dataRepo} only, so it cannot read your GitHub
+              profile. That is the correct, safest setup — Board just needs to know which
+              of you is signing in.
+            </p>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {choices.map((m) => (
+                <button
+                  key={m.login}
+                  type="button"
+                  className="btn"
+                  onClick={() => chooseMember(m)}
+                >
+                  <img className="avatar" src={m.avatarUrl} alt="" width={20} height={20} />
+                  {m.name ?? m.login}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <button
+          className="btn btn-primary"
+          type="submit"
+          disabled={busy || !token.trim() || !!choices}
+        >
+          {busy ? 'Checking…' : choices ? 'Pick your name above' : 'Sign in'}
         </button>
 
         <p className="faint" style={{ marginBottom: 0, marginTop: 14 }}>
