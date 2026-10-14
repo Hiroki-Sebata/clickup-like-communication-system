@@ -12,18 +12,27 @@ on:
     types: [opened, assigned, labeled, closed, reopened]
   issue_comment:
     types: [created]
+  # Projects are milestones. A deadline being set or moved is worth knowing about.
+  milestone:
+    types: [created, edited, closed]
 
 permissions:
   contents: read
 
 jobs:
   notify:
-    # Skip the noise. A "labeled" event fires for priority and client labels too,
-    # and nobody needs a phone buzz because a client label was tidied up. The job
-    # is skipped before a runner is allocated, so these cost nothing.
+    # Two kinds of noise are dropped before a runner is even allocated, so they
+    # cost nothing:
+    #  - a "labeled" event for a priority or client label; only status matters;
+    #  - a milestone edit that did not touch the due date (a typo in the
+    #    description is not a notification).
     if: >-
-      github.event.action != 'labeled' ||
-      startsWith(github.event.label.name, 'status: ')
+      (github.event.action != 'labeled' ||
+       startsWith(github.event.label.name, 'status: '))
+      &&
+      (github.event_name != 'milestone' ||
+       github.event.action != 'edited' ||
+       github.event.changes.due_on != null)
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
@@ -41,21 +50,77 @@ jobs:
           ACTOR: ${{ github.event.sender.login }}
           NUMBER: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
+          CREATED_AT: ${{ github.event.issue.created_at }}
           LABEL: ${{ github.event.label.name }}
           ASSIGNEE: ${{ github.event.assignee.login }}
           COMMENT: ${{ github.event.comment.body }}
           LABELS_JSON: ${{ toJSON(github.event.issue.labels.*.name) }}
+          ASSIGNEES_JSON: ${{ toJSON(github.event.issue.assignees.*.login) }}
+          MILESTONE_TITLE: ${{ github.event.milestone.title }}
+          MILESTONE_DUE: ${{ github.event.milestone.due_on }}
+          MILESTONE_OPEN: ${{ github.event.milestone.open_issues }}
+          MILESTONE_CLOSED: ${{ github.event.milestone.closed_issues }}
         run: |
           set -euo pipefail
+
+          # --- projects (milestones) -----------------------------------------
+          if [ "$EVENT" = "milestone" ]; then
+            case "$ACTION" in
+              created) MWHAT="created the project" ;;
+              closed)  MWHAT="closed the project" ;;
+              *)       MWHAT="changed the deadline of" ;;
+            esac
+            TEXT="$ACTOR $MWHAT \"$MILESTONE_TITLE\""
+            if [ -n "${MILESTONE_DUE:-}" ]; then
+              TEXT="$TEXT"$'\n'"Due: ${MILESTONE_DUE%%T*}"
+            else
+              TEXT="$TEXT"$'\n'"No due date"
+            fi
+            TOTAL=$(( ${MILESTONE_OPEN:-0} + ${MILESTONE_CLOSED:-0} ))
+            TEXT="$TEXT"$'\n'"${MILESTONE_CLOSED:-0} of $TOTAL tasks done"
+            if [ -n "${BOARD_URL:-}" ]; then
+              TEXT="$TEXT"$'\n'"$BOARD_URL/#/projects"
+            fi
+            curl --silent --show-error --fail-with-body \
+              --max-time 20 --retry 2 --retry-delay 3 --output /dev/null \
+              "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              --data-urlencode "chat_id=$CHAT_ID" \
+              --data-urlencode "text=$TEXT" \
+              --data-urlencode "disable_web_page_preview=true"
+            exit 0
+          fi
+
+          # --- one new task must not mean three messages ----------------------
+          # Creating a task makes GitHub fire THREE events at once: opened,
+          # assigned and labeled. Each starts its own run, so one click produced
+          # three buzzes. Only "opened" is worth sending, and it is made to carry
+          # the assignee and status so nothing is lost by dropping the other two.
+          #
+          # They are told apart by the age of the issue, not by guessing: an
+          # event that arrives seconds after the issue was created is part of
+          # that first burst. The 60s window is generous because a runner takes
+          # 10-20s to boot before this script even starts, while a genuine later
+          # change is minutes away at least.
+          if [ "$EVENT" = "issues" ] && [ "$ACTION" != "opened" ] && [ -n "${CREATED_AT:-}" ]; then
+            AGE=$(( $(date -u +%s) - $(date -u -d "$CREATED_AT" +%s) ))
+            if [ "$AGE" -lt 60 ]; then
+              echo "Issue #$NUMBER is only ${AGE}s old, so this '$ACTION' event is"
+              echo "part of its creation. The 'opened' message covers it. Skipping."
+              exit 0
+            fi
+          fi
 
           # The task's current status, read out of its labels.
           STATUS=$(printf '%s' "$LABELS_JSON" \
             | jq -r '[.[] | select(startswith("status: ")) | ltrimstr("status: ")] | first // ""')
 
+          # Who it belongs to, for the creation message.
+          WHO=$(printf '%s' "$ASSIGNEES_JSON" | jq -r 'join(" and ") // ""')
+
           # Who did what, in plain words.
           case "$EVENT:$ACTION" in
             issues:opened)        WHAT="created" ;;
-            issues:assigned)      WHAT="assigned ${ASSIGNEE:-someone}" ;;
+            issues:assigned)      WHAT="assigned ${ASSIGNEE:-someone} to" ;;
             issues:labeled)       WHAT="moved" ;;
             issues:closed)        WHAT="finished" ;;
             issues:reopened)      WHAT="reopened" ;;
@@ -75,6 +140,15 @@ jobs:
           TEXT="$ACTOR $WHAT #$NUMBER: $TITLE"
           if [ -n "$STATUS" ] && [ "$ACTION" != "closed" ]; then
             TEXT="$TEXT"$'\n'"Status: $STATUS"
+          fi
+          # Only on creation: say who it is for, since the separate "assigned"
+          # message is deliberately suppressed.
+          if [ "$ACTION" = "opened" ]; then
+            if [ -n "$WHO" ]; then
+              TEXT="$TEXT"$'\n'"For: $WHO"
+            else
+              TEXT="$TEXT"$'\n'"Nobody assigned yet"
+            fi
           fi
           if [ "$EVENT" = "issue_comment" ]; then
             # One line of the comment is enough for a notification.

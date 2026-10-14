@@ -51,6 +51,12 @@ jobs:
             --json number,title,assignees,labels,body > issues.json
           echo "Fetched $(jq length issues.json) open issues."
 
+          # Projects are milestones, and they carry their own deadline. gh has no
+          # milestone command, so this goes through the plain API.
+          gh api "repos/$GITHUB_REPOSITORY/milestones?state=open&per_page=100" \
+            > milestones.json || echo '[]' > milestones.json
+          echo "Fetched $(jq length milestones.json) open projects."
+
       - name: Build and send the digest
         if: steps.clock.outputs.skip == 'false'
         env:
@@ -64,7 +70,33 @@ jobs:
           # Pull the due date out of the hidden "<!-- board: {...} -->" block that
           # Board writes at the top of each issue body. A missing or broken block
           # just means "no due date", never a failed run.
-          TEXT=$(jq -r --arg today "$TODAY" '
+          # Projects are milestones with their own deadline. Worked out first,
+          # because whether any exist decides if an "all clear" line would be a
+          # lie further down.
+          PROJECTS=$(jq -r --arg today "$TODAY" '
+            [ .[]
+              | select(.due_on != null)
+              | { title, due: (.due_on | split("T")[0]), open: .open_issues, closed: .closed_issues }
+              | select(.due <= $today)
+            ]
+            | sort_by(.due)
+            | if length == 0 then ""
+              else
+                ["", "PROJECT DEADLINES (\(length)):"]
+                + map(
+                    "  " + .title
+                    + (if .due < $today then " — OVERDUE since \(.due)" else " — due TODAY" end)
+                    + (if (.open + .closed) == 0 then "  [no tasks in it yet]"
+                       else "  [\(.closed) of \(.open + .closed) tasks done]" end)
+                  )
+                | join("\n")
+              end
+          ' milestones.json)
+
+          HAS_PROJECTS=no
+          [ -n "$PROJECTS" ] && HAS_PROJECTS=yes
+
+          TEXT=$(jq -r --arg today "$TODAY" --arg hasprojects "$HAS_PROJECTS" '
             def due:
               (.body // "")
               | [scan("<!--\\s*board:\\s*(\\{[^}]*\\})\\s*-->")]
@@ -97,9 +129,17 @@ jobs:
                    then ["", "NOBODY PICKED UP (\($free | length)):"]
                         + ($free | sort_by(.number) | map("    #\(.number) \(.title)")) else [] end)
                 + (if (($overdue | length) + ($today_list | length) + ($free | length)) == 0
-                   then ["", "Nothing overdue, nothing due today, nothing unassigned."] else [] end)
+                   then (if $hasprojects == "yes"
+                         then ["", "No tasks overdue, due today, or unassigned."]
+                         else ["", "Nothing overdue, nothing due today, nothing unassigned."]
+                         end)
+                   else [] end)
               ) | join("\n")
           ' issues.json)
+
+          if [ -n "$PROJECTS" ]; then
+            TEXT="$TEXT"$'\n'"$PROJECTS"
+          fi
 
           if [ -n "${BOARD_URL:-}" ]; then
             TEXT="$TEXT"$'\n\n'"$BOARD_URL"
